@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="topbar">
+  <a class="brand" href="/" aria-label="diemRenLuyen">
+    <span class="brand-mark small" aria-hidden="true"><span></span><span></span><span></span></span>
+    <span>diemRenLuyen</span>
+  </a>
+  <nav aria-label="{{ t('Dashboard navigation') }}">
+    <a href="#overview">{{ t('Overview') }}</a>
+    <a href="#telegram">Telegram</a>
+    <a href="#pages">{{ t('Pages') }}</a>
+  </nav>
+  <div class="language-switch" aria-label="Language">
+    <a href="{{ url_for('set_language', language='en', next=request.full_path) }}" class="{{ 'active' if current_language() == 'en' else '' }}">EN</a>
+    <a href="{{ url_for('set_language', language='vi', next=request.full_path) }}" class="{{ 'active' if current_language() == 'vi' else '' }}">VI</a>
+  </div>
+  <form method="post" action="{{ url_for('logout') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="text-button" type="submit">{{ t('Sign out') }}</button>
+  </form>
+</header>
+
+<main class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-stack" aria-live="polite">
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <section class="hero" id="overview">
+    <div>
+      <p class="eyebrow">Facebook → Telegram</p>
+      <h1>{{ t('Never miss the post') }}<br><span>{{ t('that matters.') }}</span></h1>
+      <p class="lede">{{ t('Watch the Facebook Pages you can access. diemRenLuyen checks for new posts and sends them straight to your Telegram chat.') }}</p>
+      <div class="hero-actions">
+        <form method="post" action="{{ url_for('poll_now') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="button primary" type="submit" {% if not ready or running %}disabled{% endif %}>
+            {{ t('Checking…') if running else t('Check now') }}
+          </button>
+        </form>
+        <form method="post" action="{{ url_for('toggle') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="button secondary" type="submit">{{ t('Pause alerts') if settings.enabled == "1" else t('Resume alerts') }}</button>
+        </form>
+      </div>
+    </div>
+    <div class="pulse-visual" aria-hidden="true">
+      <div class="orbit orbit-one"></div>
+      <div class="orbit orbit-two"></div>
+      <div class="pulse-core"><span></span></div>
+      <div class="float-card facebook-card"><b>f</b><span>{{ t('New Page post') }}</span></div>
+      <div class="float-card telegram-card"><b>➤</b><span>{{ t('Alert delivered') }}</span></div>
+    </div>
+  </section>
+
+  <section class="stats-grid" aria-label="{{ t('Notifier status') }}">
+    <article class="stat-card">
+      <p>{{ t('System') }}</p>
+      <strong><span class="status-dot {{ 'live' if settings.enabled == '1' else 'paused' }}"></span>{{ t('Active') if settings.enabled == "1" else t('Paused') }}</strong>
+      <small>{{ t('Automatic checks') }}</small>
+    </article>
+    <article class="stat-card">
+      <p>{{ t('Watching') }}</p>
+      <strong>{{ pages|length }} {{ t('Pages') }}</strong>
+      <small>{{ t('Authorized sources') }}</small>
+    </article>
+    <article class="stat-card span-two">
+      <p>{{ t('Last check') }}</p>
+      <strong>{{ settings.last_check }}</strong>
+      <small>{{ settings.last_result }}</small>
+    </article>
+  </section>
+
+  <section class="two-column">
+    <article class="panel" id="telegram">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">{{ t('Step 1') }}</p>
+          <h2>{{ t('Connect Telegram') }}</h2>
+        </div>
+        <span class="connection-badge {{ 'connected' if settings.telegram_configured == '1' and settings.telegram_chat_id else '' }}">
+          {{ t('Configured') if settings.telegram_configured == "1" and settings.telegram_chat_id else t('Needs setup') }}
+        </span>
+      </div>
+      <form method="post" action="{{ url_for('save_settings') }}" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label for="telegram_bot_token">{{ t('Bot token') }}</label>
+        <div class="input-with-button">
+          <input id="telegram_bot_token" name="telegram_bot_token" type="password" autocomplete="off" placeholder="{{ '•••••••• saved ••••••••' if settings.telegram_configured == '1' else t('Paste the token from @BotFather') }}">
+          <button class="reveal-button" type="button" data-reveal="telegram_bot_token" aria-label="{{ t('Show or hide token') }}">{{ t('Show') }}</button>
+        </div>
+        <p class="field-help">{{ t('Leave blank to keep the saved token.') }}</p>
+
+        <label for="telegram_chat_id">{{ t('Chat ID') }}</label>
+        <input id="telegram_chat_id" name="telegram_chat_id" value="{{ settings.telegram_chat_id }}" inputmode="numeric" placeholder="{{ t('Leave blank and use the finder below') }}">
+        <p class="field-help">{{ t('This is the numeric ID of the private chat, group, or channel that receives alerts.') }} {{ t('Send /start to your bot, save the bot token, then select Find and save my chat ID below.') }}</p>
+
+        <div class="form-grid">
+          <div>
+            <label for="graph_api_version">{{ t('Meta API version') }}</label>
+            <input id="graph_api_version" name="graph_api_version" value="{{ settings.graph_api_version }}" pattern="v[0-9]+\.[0-9]+" required>
+          </div>
+          <div>
+            <label for="poll_interval_seconds">{{ t('Check every') }}</label>
+            <select id="poll_interval_seconds" name="poll_interval_seconds">
+              {% for seconds, label in [(60, '1 minute'), (300, '5 minutes'), (900, '15 minutes'), (1800, '30 minutes'), (3600, '1 hour')] %}
+                <option value="{{ seconds }}" {% if settings.poll_interval_seconds|int == seconds %}selected{% endif %}>{{ t(label) }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <label for="initial_sync">{{ t('When adding a Page') }}</label>
+        <select id="initial_sync" name="initial_sync">
+          <option value="skip" {% if settings.initial_sync == 'skip' %}selected{% endif %}>{{ t('Start with the next new post') }}</option>
+          <option value="send" {% if settings.initial_sync == 'send' %}selected{% endif %}>{{ t('Send up to 25 recent posts') }}</option>
+        </select>
+
+        <button class="button primary" type="submit">{{ t('Save settings') }}</button>
+      </form>
+      <div class="inline-actions">
+        <form method="post" action="{{ url_for('find_chats') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="text-link" type="submit">{{ t('Find and save my chat ID') }}</button>
+        </form>
+        <form method="post" action="{{ url_for('test_telegram') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="text-link" type="submit">{{ t('Send test message') }}</button>
+        </form>
+      </div>
+    </article>
+
+    <article class="panel" id="pages">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">{{ t('Step 2') }}</p>
+          <h2>{{ t('Watch Facebook Pages') }}</h2>
+        </div>
+        <span class="count-badge">{{ pages|length }}</span>
+      </div>
+
+      {% if pages %}
+        <div class="page-list">
+          {% for page in pages %}
+            <div class="page-row">
+              <div class="page-avatar">{{ page.label[:1]|upper }}</div>
+              <div class="page-info">
+                <strong>{{ page.label }}</strong>
+                <span>ID {{ page.page_id }}</span>
+              </div>
+              <form method="post" action="{{ url_for('remove_page', page_id=page.page_id) }}" data-confirm="{{ t('Stop watching {name}?', name=page.label) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="icon-button" type="submit" aria-label="{{ t('Remove {name}', name=page.label) }}">×</button>
+              </form>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state">
+          <span>+</span>
+          <p>{{ t('No Pages yet. Add your first authorized Page below.') }}</p>
+        </div>
+      {% endif %}
+
+      <details class="add-page" {% if not pages %}open{% endif %}>
+        <summary>{{ t('Add a Facebook Page') }}</summary>
+        <form method="post" action="{{ url_for('add_page') }}" class="stack-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label for="page_id">{{ t('Page ID') }}</label>
+          <input id="page_id" name="page_id" placeholder="{{ t('Numeric ID from /me/accounts') }}" required>
+          <label for="page_label">{{ t('Custom name') }} <span>({{ t('optional') }})</span></label>
+          <input id="page_label" name="label" placeholder="{{ t('Uses the Facebook Page name by default') }}">
+          <label for="access_token">{{ t('Page access token') }}</label>
+          <div class="input-with-button">
+            <input id="access_token" name="access_token" type="password" autocomplete="off" required>
+            <button class="reveal-button" type="button" data-reveal="access_token" aria-label="{{ t('Show or hide token') }}">{{ t('Show') }}</button>
+          </div>
+          <p class="field-help">{{ t('The token is verified with Meta before it is encrypted and saved.') }}</p>
+          <button class="button secondary" type="submit">{{ t('Verify and add Page') }}</button>
+        </form>
+      </details>
+
+      <aside class="notice">
+        <strong>{{ t('About “any Page”') }}</strong>
+        <p>{{ t('Meta allows Pages your token can read. Arbitrary public Pages require approved Page Public Content Access.') }}</p>
+        <a href="https://developers.facebook.com/docs/features-reference/page-public-content-access/" target="_blank" rel="noreferrer">{{ t('Read Meta’s policy ↗') }}</a>
+      </aside>
+    </article>
+  </section>
+
+  <section class="panel activity-panel">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">{{ t('Recent') }}</p>
+        <h2>{{ t('Activity') }}</h2>
+      </div>
+    </div>
+    {% if activity %}
+      <div class="activity-list">
+        {% for item in activity %}
+          <div class="activity-row">
+            <span class="activity-icon {{ item.level }}"></span>
+            <p>{{ item.message }}</p>
+            <time>{{ item.created_at }} UTC</time>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">{{ t('Configuration changes and notification checks will appear here.') }}</p>
+    {% endif %}
+  </section>
+</main>
+
+<footer>
+  <p>{{ t('diemRenLuyen is an independent tool and is not affiliated with Meta or Telegram.') }}</p>
+</footer>
+{% endblock %}

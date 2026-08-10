@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ t('Sign in') }} · diemRenLuyen{% endblock %}
+{% block body %}
+<main class="login-shell">
+  <div class="language-switch login-language" aria-label="Language">
+    <a href="{{ url_for('set_language', language='en', next=request.path) }}" class="{{ 'active' if current_language() == 'en' else '' }}">EN</a>
+    <a href="{{ url_for('set_language', language='vi', next=request.path) }}" class="{{ 'active' if current_language() == 'vi' else '' }}">VI</a>
+  </div>
+  <section class="login-card">
+    <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+    <p class="eyebrow">{{ t('Private dashboard') }}</p>
+    <h1>{{ t('Welcome to') }} <span>diemRenLuyen</span></h1>
+    <p class="lede">{{ t('Facebook Page updates, delivered quietly to your Telegram.') }}</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="flash {{ category }}" role="alert">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+    <form method="post" class="stack-form">
+      <label for="password">{{ t('Dashboard password') }}</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <button class="button primary wide" type="submit">{{ t('Open dashboard') }}</button>
+    </form>
+    <p class="microcopy">{{ t('This password was created during first-time setup.') }}</p>
+  </section>
+</main>
+{% endblock %}

@@ -1,0 +1,11 @@
+services:
+  pagepulse:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
