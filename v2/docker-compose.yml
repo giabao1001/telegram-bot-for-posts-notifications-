@@ -1,0 +1,8 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    volumes:
+      # SQLite database + seen-post history persist across restarts.
+      - ./data:/data
+    restart: unless-stopped
