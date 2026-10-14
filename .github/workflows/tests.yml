@@ -18,4 +18,4 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt pytest
       - run: python -m pytest -q
-      - run: python -m py_compile app.py dashboard.py desktop_launcher.py pagepulse_launcher.py storage.py setup.py translations.py
+      - run: python -m py_compile diemrenluyen_v2/*.py tests/*.py conftest.py
