@@ -1,390 +1,259 @@
-# diemRenLuyen
+# DiemRenLuyen v2
 
-diemRenLuyen is a private Facebook Page monitor that sends new Page posts to a
-Telegram conversation. It includes a local browser dashboard, encrypted credential
-storage, automatic polling, deduplication, English and Vietnamese interfaces, and
-desktop launchers for Windows and macOS.
+A **public multi-user Telegram bot** that notifies Vietnamese university students
+about school events posted on Facebook — so they never miss events that count
+toward their training points (*điểm rèn luyện*).
 
-The application runs on your computer. Telegram is the notification destination;
-the dashboard is not a Telegram Mini App. Your computer must be awake and connected
-to the internet while monitoring.
+Anyone can `/start` the bot, pick their language (English / Tiếng Việt) and
+their school(s). The bot polls each school's curated Facebook pages and
+forwards new event posts to every subscriber of that school. Users can also
+suggest Facebook pages to watch; suggestions wait in a moderation queue until
+an admin approves them.
 
-## Features
+This is a ground-up redesign of the original single-owner
+[diemRenLuyen](https://github.com/giabao1001/telegram-bot-for-posts-notifications-)
+monitor: the polling/dedupe/Telegram-send engine is reused, but everything
+around it (users, schools, subscriptions, moderation, hosting) is new.
 
-- Monitors Facebook Pages through the official Meta Graph API
-- Sends each new post once through the Telegram Bot API
-- Supports private chats, groups, and channels
-- Finds and saves a Telegram Chat ID from recent bot conversations
-- Offers English and Vietnamese with one-click `EN` / `VI` controls
-- Encrypts Telegram and Facebook tokens before storing them in SQLite
-- Includes configurable polling and first-sync behavior
-- Provides one-click desktop launchers and sign-in auto-start
-- Supports Windows, macOS, Linux, and Docker
-- Builds downloadable Windows and macOS packages through GitHub Releases
+---
 
-## How it works
+## ⚠️ Read this first: the Facebook dependency
 
-```text
-Meta Graph API
-      │
-      ▼
-diemRenLuyen background service
-      │
-      ├── records seen post IDs in local SQLite storage
-      │
-      ▼
-Telegram Bot API ──► private chat, group, or channel
-```
+Reading a Facebook Page that **you do not manage** requires Meta's
+**Page Public Content Access** feature. That means:
 
-The service polls every 1, 5, 15, 30, or 60 minutes. On the first check, it can
-silently establish a baseline or send up to 25 recent posts. Later checks compare
-post IDs with the local database and send only posts that have not been seen.
+- creating a Meta developer app,
+- requesting the feature, and
+- passing Meta's **app review** (business verification is often required).
 
-## Download for Windows or macOS
+**Approval is controlled by Meta and is not guaranteed.** Without it, the bot
+can only read Pages whose access tokens your app/user is authorized for
+(typically Pages you manage).
 
-Open the repository's [Releases page](https://github.com/giabao1001/telegram-bot-for-posts-notifications-/releases)
-and download the archive for your operating system:
+The bot is designed honestly around this constraint:
 
-- `diemRenLuyen-Windows.zip` contains the standalone Windows executable.
-- `diemRenLuyen-macOS.zip` contains the standalone macOS application.
+- every Page carries its **own access token** (Fernet-encrypted at rest);
+- a Page that Meta refuses to serve is recorded with its error, retried on
+  later cycles, and **auto-disabled after 5 consecutive failures** so one bad
+  Page never stops the rest;
+- only **admin-approved** Pages are ever polled — user suggestions stay in the
+  moderation queue until an admin attaches a working token.
 
-Release files are created automatically when a version tag such as `v1.0.0` is
-pushed. Until the first tagged release is published, use the source installation
-instructions below.
+Do not expect the bot to read arbitrary public Pages without that Meta
+approval. Plan your launch around it: get the approval first, or start with
+Pages you manage.
 
-### Windows desktop application
-
-1. Download and extract `diemRenLuyen-Windows.zip`.
-2. Double-click `diemRenLuyen.exe`.
-3. Choose and confirm a dashboard password of at least 12 characters.
-4. Select **Start / Open Dashboard**.
-5. Select **Enable auto-start** if you want it to start when you sign in to Windows.
-
-The desktop window can be closed after the service starts. The service continues in
-the background without a Command Prompt or PowerShell window. Open the executable
-again to open the dashboard, stop the service, or change automatic startup.
-
-Windows may show a Microsoft Defender SmartScreen warning because community builds
-are not code-signed. Verify that the download came from this repository's Releases
-page before choosing **More info → Run anyway**.
-
-Application data is stored under:
+## Architecture
 
 ```text
-%LOCALAPPDATA%\diemRenLuyen
+                    ┌─────────────────────┐
+                    │  Meta Graph API     │
+                    │  /{page}/posts     │
+                    └────────┬────────────┘
+                             │  poll every N seconds (worker thread)
+                             ▼
+                    ┌─────────────────────┐
+                    │  engine.poll_once   │──► seen_posts(page_id, fb_post_id)
+                    │  dedupe + baseline │    (per-page, SQLite)
+                    └────────┬────────────┘
+                             │ new posts
+                             ▼
+                    ┌─────────────────────┐
+                    │ engine.plan_deliveries│──► subscribers_for_school
+                    │ per-user language   │
+                    └────────┬────────────┘
+                             │ asyncio fan-out (chunked, ~10 concurrent)
+                             ▼
+                 ┌───────────────────────┐
+                 │ Telegram subscribers  │
+                 │ EN or VI message each │
+                 └───────────────────────┘
+
+  ┌──────────────┐   /start, /schools, /subscribe…    ┌──────────────┐
+  │  Subscribers │ ◄──────────────────────────────► │  PTB bot     │
+  └──────────────┘                                   │  (asyncio)   │
+                                                     └──────────────┘
+  ┌──────────────┐   /pendingpages, /approvepage…     (admin chat IDs)
+  │    Admins    │ ◄──────────────────────────────►  from ADMIN_CHAT_IDS
+  └──────────────┘
 ```
 
-### macOS desktop application
+**Data model (SQLite, `data/bot.db`):**
 
-1. Download and extract `diemRenLuyen-macOS.zip`.
-2. Open `diemRenLuyen.app`.
-3. Choose and confirm a dashboard password of at least 12 characters.
-4. Select **Start / Open Dashboard**.
-5. Select **Enable auto-start** if you want it to start when you sign in to macOS.
+| table | purpose |
+|---|---|
+| `users` | `chat_id`, `language` (en/vi), `is_active` (auto-cleared if the user blocks the bot) |
+| `schools` | `id`, `name` |
+| `pages` | `school_id`, `fb_page_id`, `page_name`, `token_encrypted`, `status` (pending/approved/rejected/disabled), `added_by_chat_id`, `note`, `last_error`, `consecutive_failures` |
+| `subscriptions` | `(user_chat_id, school_id)` |
+| `seen_posts` | `(page_id, fb_post_id)` — dedupe, scoped per page |
+| `initialized_pages` | first-sync baseline per page |
 
-If macOS blocks the unsigned community build, Control-click the application, select
-**Open**, and confirm that you want to open it. Only do this for a file downloaded
-from this repository's Releases page.
+A Postgres migration later means swapping the connection factory and the `?`
+placeholders (psycopg uses `%s`); the `Database` method signatures can stay.
 
-Application data is stored under:
+## Project layout
 
 ```text
-~/Library/Application Support/diemRenLuyen
+diemrenluyen_v2/
+  __init__.py     package version
+  config.py       env/.env loading + validation
+  crypto.py       Fernet encrypt/decrypt for Page tokens
+  i18n.py         English/Vietnamese strings
+  db.py           SQLite schema + data-access layer
+  meta.py         Meta Graph API client
+  messages.py     post → Telegram HTML formatting, FB link parsing
+  engine.py       poll_once (dedupe) + plan_deliveries (fan-out)
+  bot.py          user commands + onboarding flows (python-telegram-bot)
+  admin.py        admin-only moderation/management commands
+  admin_cli.py    terminal CLI for bootstrapping (no Telegram needed)
+  main.py         entrypoint: bot + background poll loop
+tests/            pytest suite (dedupe, fan-out, moderation, i18n, config)
+Dockerfile, docker-compose.yml   always-on hosting
 ```
 
-## Install from source
+## Quick start
 
-Python 3.11 or newer is required.
+### 1. Create the Telegram bot
 
-### macOS or Linux
+1. Message `@BotFather` on Telegram → `/newbot` → pick a name and username.
+2. Copy the bot token. **Never commit it.**
+
+### 2. Configure
 
 ```bash
-git clone https://github.com/giabao1001/telegram-bot-for-posts-notifications-.git
-cd telegram-bot-for-posts-notifications-
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python setup.py
-python dashboard.py
+cp .env.example .env
+# edit .env:
+#   TELEGRAM_BOT_TOKEN=...        (from BotFather)
+#   ADMIN_CHAT_IDS=123456789      (your Telegram numeric ID; message @userinfobot to get it)
+#   CONFIG_ENCRYPTION_KEY=...     (generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+See `.env.example` for all options (`POLL_INTERVAL_SECONDS`,
+`INITIAL_SYNC=skip|send`, `DEFAULT_LANGUAGE`, …).
 
-On macOS, build and use the no-Terminal launcher:
+### 3a. Run with Docker (recommended — always-on)
 
 ```bash
-./scripts/build_macos_launcher.sh
-open "diemRenLuyen Launcher.app"
-```
-
-Enable automatic startup for the source installation:
-
-```bash
-.venv/bin/python pagepulse_launcher.py install-autostart
-```
-
-Disable it later with:
-
-```bash
-.venv/bin/python pagepulse_launcher.py uninstall-autostart
-```
-
-### Windows PowerShell
-
-```powershell
-git clone https://github.com/giabao1001/telegram-bot-for-posts-notifications-.git
-cd telegram-bot-for-posts-notifications-
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python setup.py
-python dashboard.py
-```
-
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
-
-Developers can also run `desktop_launcher.py` to exercise the desktop launcher from
-source. The packaged Windows release uses the same launcher without displaying a
-terminal window.
-
-### Linux
-
-Linux uses the source commands above. For unattended operation, create a systemd
-user service or use Docker. The browser dashboard and notifier themselves are not
-macOS- or Windows-specific.
-
-## First-time dashboard setup
-
-`setup.py` creates `.env` with:
-
-- a password hash for dashboard sign-in;
-- a random Flask session key;
-- a Fernet encryption key for saved credentials;
-- the local database path and network settings.
-
-Keep `.env` private and back it up together with `data/notifier.db`. The database
-cannot decrypt saved tokens without the original `CONFIG_ENCRYPTION_KEY`.
-
-## Change between English and Vietnamese
-
-Select `EN` or `VI` in the upper-right corner of the login page or dashboard. The
-preference is stored in your private browser session. Navigation, field labels,
-validation messages, buttons, and help text update immediately after the click.
-
-## Connect Telegram
-
-### 1. Create a bot
-
-1. Open Telegram and message the verified `@BotFather` account.
-2. Send `/newbot`.
-3. Choose a display name.
-4. Choose a unique username ending in `bot`.
-5. Copy the bot token and keep it private.
-
-Anyone who obtains the token can control the bot. Never commit it to Git or include
-it in screenshots.
-
-### 2. Start the destination conversation
-
-For a private chat, open the new bot, press **Start**, and send `/start`. A Telegram
-bot generally cannot initiate a private conversation before the user contacts it.
-
-For a group, add the bot to the group and send a bot command in that group. For a
-channel, add the bot with the permissions needed to post and create an update the
-bot can observe.
-
-### 3. Find the Chat ID
-
-1. Open the diemRenLuyen dashboard.
-2. Paste the bot token under **Connect Telegram**.
-3. Leave Chat ID blank and select **Save settings**.
-4. Select **Find and save my chat ID**.
-5. If one conversation is found, it is saved automatically.
-6. If several are found, copy the desired numeric ID into Chat ID and save again.
-7. Select **Send test message**.
-
-A private Chat ID normally looks like `123456789`. Group and channel IDs are often
-negative, for example `-1001234567890`. The Chat ID is not a Telegram username and
-is not the bot token.
-
-If no conversation is found, send `/start` or another bot command in the desired
-conversation and try again.
-
-## Connect a Facebook Page
-
-Meta controls which Pages an access token may read. The application does not scrape
-Facebook HTML and never asks for a Facebook password.
-
-### Pages you manage
-
-1. Create an app in [Meta for Developers](https://developers.facebook.com/).
-2. Add the Facebook/Business login capability appropriate for the app.
-3. Generate a user token with `pages_show_list` and `pages_read_engagement`.
-4. In Graph API Explorer, request:
-
-   ```text
-   GET /me/accounts?fields=id,name,access_token
-   ```
-
-5. Copy the desired Page's numeric `id` and Page `access_token`.
-6. In diemRenLuyen, open **Watch Facebook Pages**.
-7. Enter the Page ID and Page access token, then select **Verify and add Page**.
-
-Meta verifies the token before diemRenLuyen encrypts and saves it. Explorer tokens
-may be short-lived; an always-on installation should use an appropriate long-lived
-token supported by Meta.
-
-### Public Pages you do not manage
-
-Reading arbitrary public Page content requires Meta's approved **Page Public Content
-Access** feature. App Review and business verification may be required. Approval is
-controlled by Meta and is not guaranteed.
-
-## Initial synchronization
-
-The **When adding a Page** option controls the first successful check:
-
-- **Start with the next new post** records existing posts without sending them.
-- **Send up to 25 recent posts** sends recent content immediately.
-
-After the baseline is established, saved post IDs prevent duplicate notifications.
-
-## Automatic startup and background behavior
-
-Desktop auto-start is per user and begins after that user signs in:
-
-- Windows uses the current user's standard startup registration.
-- macOS uses a per-user LaunchAgent.
-
-Neither mode requires a terminal window. Closing the browser does not stop the
-notifier. Sleeping, shutting down, or disconnecting the computer pauses checks until
-the service can run again. For uninterrupted 24/7 monitoring, deploy to an always-on
-computer or server.
-
-## Docker
-
-Generate `.env` once, then start the container:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python setup.py
 docker compose up -d --build
-```
-
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
-
-Useful commands:
-
-```bash
 docker compose logs -f
-docker compose restart
-docker compose down
 ```
 
-The `data/` directory is mounted into the container so settings and seen-post
-history survive restarts.
+The SQLite database persists in `./data/`.
 
-## Publish GitHub download files
-
-The workflow at `.github/workflows/release.yml` builds on native Windows and macOS
-GitHub runners. To publish a release:
+### 3b. Run from source
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python -m diemrenluyen_v2.admin_cli init-db
+python -m diemrenluyen_v2.main
 ```
 
-After both builds finish, GitHub creates a Release with Windows and macOS `.zip`
-downloads and generated release notes. The workflow can also be run manually to
-test packaging without publishing a Release.
+The process must stay running (that's the point of the Docker setup): the
+poll loop lives inside the bot process.
 
-Production distribution should add Apple Developer ID and Windows Authenticode
-signing. The included workflow intentionally does not require private signing keys.
-
-## Security and privacy
-
-- Telegram and Page tokens are encrypted before being stored in SQLite.
-- Dashboard writes require authentication and a CSRF token.
-- The default host is `127.0.0.1`, so the dashboard is not exposed to the network.
-- `.env`, virtual environments, databases, PID files, and logs are ignored by Git.
-- Activity messages do not include access tokens.
-- There is no public user registration; each installation is private and single-owner.
-
-If a token is committed or shared, revoke and replace it immediately. Removing the
-latest copy from Git is insufficient because Git preserves history.
-
-## Troubleshooting
-
-### Telegram: no Chat ID found
-
-Confirm that the saved token belongs to the bot you messaged. Send `/start` to that
-bot in the destination conversation, then run the finder again.
-
-### Telegram: `chat not found`
-
-The Chat ID is wrong, the bot was removed, or the bot has not been started in that
-conversation. Repeat the Chat ID discovery steps.
-
-### Telegram: `Unauthorized`
-
-The bot token is invalid or was revoked. Generate a replacement through BotFather.
-
-### Facebook: invalid or expired token
-
-Generate a new Page access token and update the Page entry. Use a long-lived token
-for unattended monitoring.
-
-### Facebook: permissions error
-
-The token lacks Page permissions, the account/app cannot access the Page, or public
-Page access requires Meta App Review.
-
-### Port 8000 is already in use
-
-Stop the other server or the previous diemRenLuyen process. Only one local instance
-can use `127.0.0.1:8000` at a time.
-
-### Saved tokens stopped decrypting
-
-Restore the `.env` that was created with the database. If the encryption key is
-lost, saved tokens must be entered again.
-
-### Desktop application will not open
-
-Extract the complete `.zip` before opening it. Review the platform warning guidance
-above and only bypass unsigned-app warnings for downloads from this repository.
-
-## Development
-
-Install test dependencies and run the checks:
+### 4. Bootstrap content (terminal, no Telegram needed)
 
 ```bash
-python -m pip install -r requirements.txt pytest
+# add schools
+python -m diemrenluyen_v2.admin_cli add-school "Đại học Bách Khoa TP.HCM"
+python -m diemrenluyen_v2.admin_cli list-schools
+
+# add a curated page (needs a Page access token — see the Facebook note above)
+python -m diemrenluyen_v2.admin_cli add-page --school 1 \
+  --fb-page-id 123456789 --token <PAGE_ACCESS_TOKEN> --name "Phòng Công tác Sinh viên"
+```
+
+Or do it from Telegram as an admin (see below).
+
+## Command reference
+
+### For students
+
+| command | what it does |
+|---|---|
+| `/start` | choose language, then pick school(s) to follow |
+| `/schools` | change the schools you follow (tap to toggle, then Done) |
+| `/subscribe <school>` | follow one school by name or ID |
+| `/unsubscribe <school>` | stop following a school |
+| `/mysubscriptions` | list the schools you follow |
+| `/addpage` | suggest a Facebook page to watch (goes to admin review) |
+| `/mypages` | see your suggestions and their status |
+| `/language` | switch English ↔ Tiếng Việt |
+| `/help` | list commands |
+
+### For admins (chat IDs in `ADMIN_CHAT_IDS`)
+
+| command | what it does |
+|---|---|
+| `/pendingpages` | list user-submitted pages awaiting review |
+| `/approvepage <id>` | approve a suggestion — the bot then asks you for the Page access token, verifies it with Meta, and starts polling |
+| `/rejectpage <id>` | reject a suggestion (the submitter is notified) |
+| `/addschool <name>` | add a school |
+| `/addpageadmin <school_id> <fb_page_id_or_link> <token> [name]` | add + approve a page in one step |
+| `/listschools`, `/listpages [school_id]` | inspect content |
+| `/disablepage <id>` / `/enablepage <id>` | pause / resume polling a page |
+| `/broadcast <message>` | message all active users |
+| `/stats` | users, schools, pages, subscriptions |
+
+**Getting a Page access token:** create an app at
+[Meta for Developers](https://developers.facebook.com/), generate a user token
+with `pages_show_list` + `pages_read_engagement`, then in Graph API Explorer
+call `GET /me/accounts?fields=id,name,access_token` and copy the Page's
+`access_token`. For unattended use, exchange it for a long-lived token. For
+Pages you don't manage, you additionally need the Page Public Content Access
+approval described above.
+
+## How notifications work
+
+1. Every `POLL_INTERVAL_SECONDS` (min 60s) the engine reads each **approved**
+   page's 25 most recent posts via the Graph API.
+2. Post IDs are compared against `seen_posts`; only unseen posts continue.
+   On a page's **first** poll, `INITIAL_SYNC=skip` silently baselines existing
+   posts; `send` forwards up to 25 recent ones.
+3. Each new post is fanned out to **active subscribers of that page's school**,
+   formatted in each subscriber's language (HTML, with a link back to
+   Facebook).
+4. If a user blocks the bot, Telegram returns `Forbidden` and the user is
+   marked inactive (they reactivate on next `/start`).
+
+## Development & testing
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 python -m pytest -q
-python -m py_compile app.py dashboard.py desktop_launcher.py pagepulse_launcher.py storage.py setup.py translations.py
+python -m py_compile diemrenluyen_v2/*.py tests/*.py
 ```
 
-Project layout:
+Tests cover: subscription model, page moderation lifecycle, per-page dedupe,
+initial-sync modes, Meta-failure auto-disable, fan-out to the right schools in
+the right languages, i18n coverage (every key translated), message formatting
+(HTML escaping, truncation), Facebook link parsing, and settings validation.
+They use throwaway SQLite databases and a scripted fake Meta client — no
+network, no tokens.
 
-```text
-app.py                    Facebook and Telegram notification engine
-dashboard.py              Flask dashboard and scheduler
-desktop_launcher.py       Cross-platform packaged desktop launcher
-pagepulse_launcher.py     Source-install macOS process/autostart manager
-translations.py           English/Vietnamese UI translations
-storage.py                Encrypted SQLite dashboard storage
-setup.py                  Source-install first-time setup
-templates/                HTML interface
-static/                   CSS and JavaScript
-macos/                    Source for the macOS launcher app
-scripts/                  Local build helpers
-tests/                    Automated tests
-.github/workflows/        Tests and desktop release builds
-```
+## Security notes
 
-## License and independence
+- Facebook Page tokens are Fernet-encrypted before touching SQLite. Back up
+  `.env` together with `data/bot.db` — losing `CONFIG_ENCRYPTION_KEY` means
+  re-entering every token.
+- `.env` and `data/` are never committed (add them to `.gitignore`).
+- Admin commands are gated on `ADMIN_CHAT_IDS`; the approve flow asks for the
+  token in chat — delete that message afterwards.
+- Broadcasts go only to users who started the bot and haven't blocked it.
 
-See [LICENSE](LICENSE). diemRenLuyen is an independent open-source project and is
-not affiliated with, endorsed by, or sponsored by Meta or Telegram.
+## Limitations / roadmap
+
+- Facebook ingestion is the hard external dependency (see top of this file).
+- SQLite is fine for thousands of users; move to Postgres if you outgrow it.
+- No keyword filtering yet (e.g. "only posts mentioning học bổng") — a natural
+  next feature on top of `plan_deliveries`.
+- Page suggestions attach to the suggester's first subscribed school; admins
+  can already see the note and curate accordingly.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Independent open-source project; not affiliated
+with, endorsed by, or sponsored by Meta or Telegram.

@@ -1,5 +1,5 @@
-cryptography>=44,<46
-Flask>=3.1,<4
+cryptography>=44,<47
 python-dotenv>=1.0,<2
+python-telegram-bot>=21,<23
 requests>=2.32,<3
-waitress>=3,<4
+pytest>=8,<9

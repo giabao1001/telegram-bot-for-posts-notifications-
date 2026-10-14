@@ -1,17 +1,6 @@
 .env
+data/
 .venv/
-.idea/
 __pycache__/
 *.pyc
-build/
-dist/
-*.spec
-notifier.db
-data/*.db
-data/*.db-shm
-data/*.db-wal
-data/*.log
-data/*.pid
 .pytest_cache/
-.DS_Store
-diemRenLuyen Launcher.app/
